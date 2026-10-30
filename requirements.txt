@@ -1,0 +1,6 @@
+Flask>=3.0,<4
+python-dotenv>=1.0
+PyYAML>=6.0
+requests>=2.31
+cryptography>=42.0
+pytest>=8.0

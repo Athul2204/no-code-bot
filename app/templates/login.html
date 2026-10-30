@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en" class="h-full bg-slate-50">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ 'Create account' if mode == 'register' else 'Sign in' }} · Bot Builder</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body class="flex min-h-full items-center justify-center px-4 py-10 font-sans text-slate-900 antialiased">
+  <div class="w-full max-w-sm">
+    <div class="mb-6 text-center">
+      <span class="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-xl bg-brand-600 text-white">
+        <svg class="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.6"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v3M7 8h10a3 3 0 013 3v5a3 3 0 01-3 3H7a3 3 0 01-3-3v-5a3 3 0 013-3zM9 13h.01M15 13h.01M9 17h6"/></svg>
+      </span>
+      <h1 class="text-2xl font-semibold">{{ 'Create your account' if mode == 'register' else 'Welcome back' }}</h1>
+      <p class="mt-1 text-sm text-slate-500">Build AI chatbots without writing code.</p>
+    </div>
+    <form method="post" class="card space-y-4 p-6" novalidate>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      {% if error %}<div role="alert" class="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{{ error }}</div>{% endif %}
+      <div>
+        <label class="label" for="email">Email</label>
+        <input class="input" id="email" name="email" type="email" autocomplete="email" required autofocus value="{{ request.form.get('email', '') }}">
+      </div>
+      <div>
+        <label class="label" for="password">Password</label>
+        <input class="input" id="password" name="password" type="password" required minlength="{{ 8 if mode == 'register' else 1 }}" autocomplete="{{ 'new-password' if mode == 'register' else 'current-password' }}">
+        {% if mode == 'register' %}<p class="hint">At least 8 characters.</p>{% endif %}
+      </div>
+      <button class="btn-primary w-full" type="submit">{{ 'Create account' if mode == 'register' else 'Sign in' }}</button>
+    </form>
+    <p class="mt-4 text-center text-sm text-slate-600">
+      {% if mode == 'register' %}Already have an account? <a class="font-medium text-brand-600 hover:underline" href="{{ url_for('auth.login') }}">Sign in</a>
+      {% elif allow_registration %}New here? <a class="font-medium text-brand-600 hover:underline" href="{{ url_for('auth.register') }}">Create an account</a>{% endif %}
+    </p>
+    {% if mode == 'login' %}<p class="mt-3 text-center text-xs text-slate-400">Demo: <code>demo@example.com</code> / <code>demo-password-123</code> (after running the seed script)</p>{% endif %}
+  </div>
+</body>
+</html>

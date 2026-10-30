@@ -1,0 +1,13 @@
+{
+  "name": "nocode-bot-builder-frontend",
+  "private": true,
+  "description": "Only needed if you want to change the styles. The compiled CSS is already in app/static/css/app.css.",
+  "scripts": {
+    "build:css": "tailwindcss -c tailwind.config.js -i app/static/css/input.css -o app/static/css/app.css --minify",
+    "watch:css": "tailwindcss -c tailwind.config.js -i app/static/css/input.css -o app/static/css/app.css --watch"
+  },
+  "devDependencies": {
+    "@tailwindcss/forms": "0.5.9",
+    "tailwindcss": "3.4.17"
+  }
+}

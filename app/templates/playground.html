@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight">Chat Playground</h1>
+    <p class="mt-1 text-sm text-slate-500">Talk to your chatbot and watch it use actions.</p>
+  </div>
+</div>
+<div id="app" data-bot-id="{{ request.args.get('bot', '') }}"><div class="flex items-center justify-center gap-2 py-16 text-sm text-slate-500"><span class="spinner"></span> Loading…</div></div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/action_test.js') }}"></script><script src="{{ url_for('static', filename='js/playground.js') }}"></script>{% endblock %}
