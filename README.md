@@ -52,9 +52,11 @@ The app works without an API key: you can build chatbots, connect databases and 
 ## How a non-technical user uses it
 
 1. **Connect Database**: pick the sample store (or upload a `.db`/`.sqlite` file). Test it, browse tables and columns with dropdowns, preview rows. Connections are **read-only** until you allow writes.
-2. **Custom Actions → New action**: choose a template, then fill a form with dropdowns for tables and columns:
-   *Search records · Retrieve by ID · Insert · Update · Call a REST API · Predefined response · Custom (form)*.
-   Actions that change data start **unapproved**; click *Review & approve* to allow them.
+2. **Custom Actions** is a node canvas (like React Flow). Each action is a lane: **Intent → Rules → Action**.
+   * Drag an action type (Search / Get by ID / Insert / Update / REST / Fixed reply / Custom form) from the **Add** bar onto the canvas. A short form asks for its settings, then it appears where you dropped it.
+   * Drag from an intent's right-hand dot into empty space to **add a rule**; drag a rule's dot onto an action to **attach or move** it. Click a node or link to edit it in the inspector, press **Delete** to remove it.
+   * Drag nodes, drag the background to pan, scroll to zoom. Positions are remembered in your browser. The old **List** tab is still available.
+   Actions that change data start **unapproved**; use *Review & approve* (inspector or List tab) to allow them. Editing intents/rules on the canvas keeps an existing approval; changing an action's settings revokes it.
 3. **Create Chatbot**: describe its purpose in plain English, set a welcome message and instructions, tick the actions it may use.
 4. **Chat Playground**: chat, watch action cards, confirm sensitive actions. **Test mode** (on by default) only *simulates* writes.
 5. **Rasa Import / Export** (optional): import existing `.yml` files, preview and download a generated project.
@@ -92,6 +94,7 @@ app/
   llm/                   provider interface, Anthropic, OpenAI-compatible
   rasa/                  importer + exporter (optional, RASA_ENABLED)
   templates/, static/    Jinja pages, compiled Tailwind CSS, per-page JavaScript
+                         (js/action_flow.js + css/flow_editor.css = the canvas editor, no build step)
 samples/rasa_bot/        sample Rasa project used by the importer demo
 scripts/init_db.py       database initialisation
 tests/                   pytest suite

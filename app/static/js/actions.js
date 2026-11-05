@@ -4,6 +4,7 @@
   const pageActions = $("#page-actions");
 
   let S = { actions: [], connections: [], templates: [], pythonEnabled: false };
+  let viewMode = "flow"; // "flow" (canvas editor, default) | "list"
   const schemaCache = {};
 
   const TYPE_LABELS = [["string", "Text"], ["integer", "Whole number"], ["number", "Number"], ["boolean", "Yes / No"]];
@@ -24,8 +25,18 @@
   }
 
   function showList() {
-    clear(pageActions).append(h("button", { class: "btn-primary", type: "button", onclick: showPicker }, "+ New action"));
+    const tab = (mode, label) => h("button", { type: "button", class: viewMode === mode ? "btn-primary btn-sm" : "btn-secondary btn-sm", onclick: () => { viewMode = mode; showList(); } }, label);
+    clear(pageActions).append(...[h("div", { class: "flex gap-1" }, tab("list", "List"), tab("flow", "Flow")), viewMode === "flow" ? null : h("button", { class: "btn-primary", type: "button", onclick: showPicker }, "+ New action")].filter(Boolean));
     clear(root);
+    if (viewMode === "flow") {
+      const box = h("div", {});
+      root.append(box);
+      App.flowEditor.mount(box, { actions: S.actions, templates: S.templates, connections: S.connections, icons: ICONS, describe,
+        newAction: (type, pos) => showBuilder(type, null, pos), edit: (a) => showBuilder(a.template_type, a),
+        test: (a) => App.testAction(a), approve, remove });
+      root.append(h("h2", { class: "mb-3 mt-10 text-base font-semibold" }, "Execution log"), logPanel());
+      return;
+    }
     if (!S.actions.length) root.append(emptyState("No actions yet", "Actions let your chatbot look things up, add records, call web services or reply with fixed text. Pick a template to begin.", [h("button", { class: "btn-primary", type: "button", onclick: showPicker }, "Create your first action")]));
     else root.append(h("div", { class: "space-y-4" }, S.actions.map(actionCard)));
     root.append(h("h2", { class: "mb-3 mt-10 text-base font-semibold" }, "Execution log"), logPanel());
@@ -66,6 +77,9 @@
       h("div", { class: "mt-2 flex flex-wrap gap-1.5" }, badges),
       h("p", { class: "mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600" }, describe(a)),
       a.when_to_use ? h("p", { class: "mt-2 text-xs text-slate-500" }, h("span", { class: "font-medium" }, "Used when: "), a.when_to_use) : null,
+      h("p", { class: "mt-2 text-xs text-slate-500" }, h("span", { class: "font-medium" }, "Intent: "), h("span", { class: "font-mono" }, a.intent || ""),
+        (a.commands || []).length ? h("span", {}, " · Commands: ", (a.commands || []).slice(0, 4).join(", ")) : null,
+        (a.rules || []).length ? h("span", {}, ` · ${a.rules.length} rule${a.rules.length === 1 ? "" : "s"}`) : null),
       h("div", { class: "mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-4" }, btns));
   }
 
@@ -104,19 +118,10 @@
   }
 
   // ============================================================================= template picker
+  /** "+ New action": the template picker now lives in the canvas palette (left side). */
   function showPicker() {
-    clear(pageActions);
-    clear(root).append(
-      h("button", { class: "btn-ghost -ml-2 mb-4", type: "button", onclick: showList }, "← Back to actions"),
-      h("h2", { class: "mb-1 text-lg font-semibold" }, "What should this action do?"),
-      h("p", { class: "mb-5 text-sm text-slate-500" }, "Pick a starting point. You'll fill in a simple form next."),
-      h("div", { class: "grid gap-4 sm:grid-cols-2 lg:grid-cols-3" }, S.templates.map((t) => {
-        const disabled = t.needs_connection && !S.connections.length;
-        return h("button", { type: "button", disabled, class: "card flex flex-col items-start p-5 text-left transition hover:border-brand-400 hover:shadow disabled:cursor-not-allowed disabled:opacity-60", onclick: () => showBuilder(t.type) },
-          h("span", { class: "text-2xl" }, ICONS[t.icon] || "⚙️"), h("span", { class: "mt-2 font-semibold" }, t.label), h("span", { class: "mt-1 text-sm text-slate-500" }, t.description),
-          disabled ? h("span", { class: "mt-2 text-xs font-medium text-amber-700" }, "Connect a database first") : null);
-      })));
-    if (!S.connections.length) root.append(h("a", { class: "mt-4 inline-block text-sm font-medium text-brand-600 hover:underline", href: "/connections" }, "Connect a database →"));
+    viewMode = "flow"; showList();
+    toast("Drag an action from the left panel onto the canvas, or click one to add it.", "info");
   }
 
   // ============================================================================= parameter editor
@@ -315,7 +320,59 @@
     };
   }
 
-  async function showBuilder(type, existing) {
+
+  // ============================================================================= intent, commands & rules
+  function flowSection(full, getNames, getToolName) {
+    const intent = h("input", { class: "input font-mono", type: "text", maxlength: 60, value: full ? full.intent || "" : "", placeholder: "auto: ask_<technical_name>", "data-field": "intent" });
+    const cmds = h("textarea", { class: "input font-mono text-sm", rows: 4, "data-field": "commands", placeholder: "/products\nshow me tents under 200\nwhat do you sell?" }, ((full && full.commands) || []).join("\n"));
+    const rules = [];
+    const list = h("div", { class: "space-y-3", "data-field": "rules" });
+    const MISS = [["ask", "Ask the user for what's missing"], ["skip", "Skip this action (dashed link)"]];
+
+    function addRule(r) {
+      r = r || {};
+      const row = { name: h("input", { class: "input", type: "text", maxlength: 80, value: r.name || "", placeholder: "e.g. Need a price before searching" }),
+        miss: select(MISS, r.on_missing || "ask"), reply: h("input", { class: "input", type: "text", maxlength: 300, value: r.reply_if_missing || "", placeholder: "Optional message when something is missing" }),
+        boxes: h("div", { class: "flex flex-wrap gap-3" }), chosen: new Set(r.requires || []),
+        yaml: h("textarea", { class: "input font-mono text-xs", rows: 7, spellcheck: false, placeholder: "Saved as Rasa YAML. Leave empty to generate it from the fields above." }, r.yaml || "") };
+      const resetYaml = () => { row.yaml.value = ""; };  // fields changed: regenerate the YAML on save
+      [row.name, row.miss, row.reply].forEach((el) => el.addEventListener("input", resetYaml));
+      const drawBoxes = () => {
+        clear(row.boxes);
+        const names = getNames();
+        if (!names.length) row.boxes.append(h("span", { class: "text-xs text-slate-500" }, "Add inputs above to require them here."));
+        names.forEach((n) => { const cb = h("input", { type: "checkbox", checked: row.chosen.has(n), class: "h-4 w-4 rounded border-slate-300 text-brand-600" });
+          cb.addEventListener("change", () => { cb.checked ? row.chosen.add(n) : row.chosen.delete(n); resetYaml(); });
+          row.boxes.append(h("label", { class: "flex items-center gap-1.5 text-sm" }, cb, h("span", { class: "font-mono" }, n))); });
+      };
+      row.draw = drawBoxes; drawBoxes();
+      row.el = h("div", { class: "rounded-lg border border-slate-200 bg-slate-50/60 p-3", onmouseenter: drawBoxes },
+        h("div", { class: "mb-2 flex items-center justify-between" }, h("span", { class: "text-xs font-semibold uppercase tracking-wide text-slate-500" }, "Rule"),
+          h("button", { class: "btn-ghost btn-sm text-red-600", type: "button", onclick: () => { rules.splice(rules.indexOf(row), 1); row.el.remove(); } }, "Remove")),
+        h("div", { class: "grid gap-3 sm:grid-cols-2" }, h("div", { class: "sm:col-span-2" }, h("label", { class: "label" }, "Rule name"), row.name),
+          h("div", { class: "sm:col-span-2" }, h("label", { class: "label" }, "Run only when the user has given"), row.boxes),
+          h("div", {}, h("label", { class: "label" }, "If something is missing"), row.miss), h("div", {}, h("label", { class: "label" }, "Question to ask (becomes an utter_ response)"), row.reply),
+          h("div", { class: "sm:col-span-2" }, h("label", { class: "label" }, "Rasa rule (rules.yml)"), row.yaml, h("p", { class: "hint" }, "This exact YAML is exported to data/rules.yml. You may edit it; only this action's intent and utter_/action_ steps are allowed."))));
+      rules.push(row); list.append(row.el);
+    }
+    ((full && full.rules) || []).forEach(addRule);
+
+    const suggest = () => {
+      const tool = getToolName();
+      if (!intent.value.trim()) intent.value = "ask_" + tool;
+      if (!cmds.value.trim()) cmds.value = ["/" + tool.slice(0, 40), tool.replace(/_/g, " ")].join("\n");
+      if (!rules.length) { const req = getNames(); if (req.length) { addRule({ name: "Collect inputs first", requires: req, on_missing: "ask" }); } }
+    };
+    const node = h("div", { class: "space-y-4" },
+      h("div", { class: "grid gap-4 sm:grid-cols-2" }, field("Intent", intent, "The goal the user has when they trigger this action. Used for Rasa export and shown to the AI.", null)),
+      field("Commands", cmds, "One per line. Start with / for a slash-command (like /products) or write a phrase users might say.", null),
+      h("div", {}, h("label", { class: "label" }, "Rules"), list, h("div", { class: "mt-2 flex gap-2" }, h("button", { class: "btn-secondary btn-sm", type: "button", onclick: () => addRule({}) }, "+ Add rule"),
+        h("button", { class: "btn-ghost btn-sm", type: "button", onclick: suggest }, "Suggest from this action"))));
+    return { node, collect: () => ({ intent: intent.value.trim(), commands: cmds.value.split("\n").map((x) => x.trim()).filter(Boolean),
+      rules: rules.map((r) => ({ name: r.name.value.trim(), requires: [...r.chosen].filter((n) => getNames().includes(n)), on_missing: r.miss.value, reply_if_missing: r.reply.value.trim(), yaml: r.yaml.value.trim() })) }) };
+  }
+
+  async function showBuilder(type, existing, dropPos) {
     clear(pageActions);
     const tpl = S.templates.find((t) => t.type === type);
     clear(root).append(loadingBlock());
@@ -332,6 +389,8 @@
     const connSel = select([["", "Choose a database…"]].concat(S.connections.map((c) => [c.id, c.name + (c.allow_writes ? " (writes allowed)" : "")])), full && full.connection_id ? full.connection_id : S.connections.length === 1 ? S.connections[0].id : "", { "data-field": "connection_id" });
     const sectionBox = h("div", {});
     let section = null;
+    const flowSec = flowSection(full, () => { try { return section ? section.collect().parameters.map((p) => p.name).filter((n) => n && n !== "id") : []; } catch (e) { return []; } },
+      () => (toolName.value.trim() || slug(name.value || "action")));
 
     async function drawSection(first) {
       clear(sectionBox); section = null;
@@ -355,6 +414,8 @@
         field("Action name *", name, null, null), field("What does it do? *", desc, null, null), field("When should the chatbot use it?", when, "Helps the AI choose this action at the right moment.", null)),
       h("section", { class: "card space-y-4 p-5" }, h("h2", { class: "text-base font-semibold" }, "Set it up"),
         tpl.needs_connection ? field("Data source *", connSel, h("span", {}, "Don't see yours? "), null) : null, sectionBox),
+      h("section", { class: "card space-y-4 p-5" }, h("h2", { class: "text-base font-semibold" }, "Intent, commands & rules"),
+        h("p", { class: "text-xs text-slate-500" }, "Decide what triggers this action and what must be true before it runs. You can also edit these directly on the canvas."), flowSec.node),
       h("section", { class: "card space-y-3 p-5" }, h("h2", { class: "text-base font-semibold" }, "Safety"),
         h("label", { class: "flex items-start gap-2 text-sm" }, confirmCb, h("span", {}, "Ask the user to confirm before this runs", isWrite ? h("span", { class: "ml-1 text-xs text-slate-500" }, "(always on for actions that change data)") : null)),
         h("label", { class: "flex items-center gap-2 text-sm" }, enabledCb, "Enabled"),
@@ -374,12 +435,13 @@
       const part = section.collect();
       const payload = { name: name.value, description: desc.value, when_to_use: when.value, tool_name: toolName.value, template_type: type,
         connection_id: tpl.needs_connection && connSel.value ? parseInt(connSel.value, 10) : null, enabled: enabledCb.checked, requires_confirmation: confirmCb.checked,
-        config: part.config, parameters: part.parameters };
+        config: part.config, parameters: part.parameters, ...flowSec.collect() };
       if (part.secrets) payload.secrets = part.secrets;
       await withLoading(saveBtn, async () => {
         try {
           const saved = existing ? await api.put("/api/actions/" + existing.id, payload) : await api.post("/api/actions", payload);
-          toast(saved.is_write ? "Saved. Approve it from the list before chatbots can use it." : "Action saved.", "success");
+          if (!existing && dropPos && saved && saved.id) App.flowEditor.placeLane(saved.id, dropPos.x, dropPos.y);
+          toast(saved.is_write ? "Saved. Approve it before chatbots can use it." : "Action saved.", "success");
           await load();
         } catch (e) { reportError(e, form); }
       });

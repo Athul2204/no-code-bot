@@ -19,7 +19,7 @@ from ..security import UnsafeURLError, safe_request
 from ..services import actions as action_svc
 from ..services import connections as conn_svc
 from ..validation import coerce_args, render_template_text
-from . import python_runner
+from . import flow, python_runner
 
 MAX_RESULT_CHARS = 6000
 
@@ -211,6 +211,10 @@ def execute_action(action: dict, raw_args: Any, *, user_id: int, test_mode: bool
             result = _err("This action changes data and has not been approved yet. Approve it on the Custom Actions page.", status="rejected")
         else:
             args, missing, errors = coerce_args(action["parameters"], raw_args)
+            # Rules: inputs demanded by an "ask" rule are required even if the input itself is optional.
+            for n in flow.rule_missing(action.get("rules"), args):
+                if n not in missing:
+                    missing.append(n)
             if errors:
                 result = _err("; ".join(errors.values()), status="invalid")
             elif missing:

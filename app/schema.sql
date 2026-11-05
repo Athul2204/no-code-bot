@@ -67,6 +67,9 @@ CREATE TABLE IF NOT EXISTS custom_actions (
     is_write              INTEGER NOT NULL DEFAULT 0,
     approved              INTEGER NOT NULL DEFAULT 0,   -- explicit approval for write / code actions
     enabled               INTEGER NOT NULL DEFAULT 1,
+    intent                TEXT NOT NULL DEFAULT '',     -- Rasa-style intent that triggers this action
+    commands              TEXT NOT NULL DEFAULT '[]',   -- JSON list: slash-commands / trigger phrases
+    rules                 TEXT NOT NULL DEFAULT '[]',   -- JSON list of {name, requires, on_missing, reply_if_missing}
     created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     UNIQUE (user_id, tool_name)

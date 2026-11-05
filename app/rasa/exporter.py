@@ -8,6 +8,7 @@ from typing import Any
 
 import yaml
 
+from ..actions import flow as flow_rules
 from ..services import actions as action_svc
 from ..validation import slugify
 from .importer import RASA_BUILTIN_ACTIONS, get_import
@@ -51,6 +52,7 @@ def build_export(user_id: int, bot: dict, import_ids: list[int]) -> dict:
     domain_actions: list[str] = []
     nlu_items: list[dict] = []
     rules: list[Any] = []
+    slots: dict[str, Any] = {}
     stories: list[Any] = []
     config: dict | None = None
     notes: list[str] = []
@@ -76,30 +78,47 @@ def build_export(user_id: int, bot: dict, import_ids: list[int]) -> dict:
 
     py_stubs: list[tuple[str, dict]] = []
     for a in actions:
-        intent = f"ask_{a['tool_name']}"
+        intent = a.get("intent") or f"ask_{a['tool_name']}"
         if intent not in existing_intents:
             intents.append(intent)
             existing_intents.add(intent)
-        examples = [a["name"].lower(), f"I want to {a['name'].lower()}"]
-        if a["when_to_use"]:
-            examples.append(a["when_to_use"][:120])
+        # Commands the author wrote come first; generated phrases only fill the gap.
+        examples = [c for c in (a.get("commands") or [])]
+        if not examples:
+            examples = [a["name"].lower(), f"I want to {a['name'].lower()}"]
+            if a["when_to_use"]:
+                examples.append(a["when_to_use"][:120])
         nlu_items.append({"intent": intent, "examples": "".join(f"- {e}\n" for e in dict.fromkeys(examples))})
         static_simple = a["template_type"] == "static_response" and not a["parameters"]
         if static_simple:
-            uname = f"utter_{a['tool_name']}"
-            responses.setdefault(uname, [{"text": a["config"]["response_text"]}])
-            rules.append({"rule": f"Answer '{a['name']}'", "steps": [{"intent": intent}, {"action": uname}]})
+            target = f"utter_{a['tool_name']}"
+            responses.setdefault(target, [{"text": a["config"]["response_text"]}])
         else:
-            aname = f"action_{a['tool_name']}"
-            if aname not in domain_actions:
-                domain_actions.append(aname)
-            rules.append({"rule": f"Run '{a['name']}'", "steps": [{"intent": intent}, {"action": aname}]})
-            py_stubs.append((aname, a))
+            target = f"action_{a['tool_name']}"
+            if target not in domain_actions:
+                domain_actions.append(target)
+            py_stubs.append((target, a))
+        # Rules are stored as real Rasa YAML; export them verbatim. Missing-input messages become utter_ responses.
+        stored = a.get("rules") or []
+        if not stored:
+            rules += flow_rules.rule_to_rasa({"name": f"Run '{a['name']}'", "requires": []}, intent, target, a["tool_name"])
+        for i, r in enumerate(stored):
+            try:
+                parsed = yaml.safe_load(r.get("yaml") or "") or []
+            except yaml.YAMLError:
+                parsed = []
+            rules += parsed if isinstance(parsed, list) else [parsed]
+            if r.get("reply_if_missing"):
+                responses.setdefault(flow_rules.missing_response_name(a["tool_name"], i), [{"text": r["reply_if_missing"]}])
+            for n in r.get("requires", []):
+                slots.setdefault(n, {"type": "text", "mappings": [{"type": "from_text"}]})
     if "greet" in existing_intents and "utter_welcome" in responses:
         rules.append({"rule": "Welcome the user when they greet", "steps": [{"intent": "greet"}, {"action": "utter_welcome"}]})
 
     slug = slugify(bot["name"], 40)
     domain = {"version": "3.1", "intents": intents}
+    if slots:
+        domain["slots"] = slots
     if responses:
         domain["responses"] = responses
     if domain_actions:

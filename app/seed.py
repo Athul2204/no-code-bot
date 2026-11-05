@@ -78,6 +78,8 @@ def seed_demo(app) -> str:
             "name": "Search products", "template_type": "db_search", "connection_id": conn_id,
             "description": "Search the product catalogue by name, category or maximum price.",
             "when_to_use": "The customer asks what we sell, wants product suggestions, prices or stock.",
+            "intent": "ask_product_info", "commands": ["/products", "show me products", "what do you sell?", "anything under $50?"],
+            "rules": [],
             "config": {"table": "products", "output_fields": ["id", "name", "category", "price", "stock", "description"], "limit": 8},
             "parameters": [
                 {"name": "name", "label": "Product name", "description": "Part of the product name", "maps_to": "name", "extra": {"operator": "contains"}},
@@ -89,12 +91,15 @@ def seed_demo(app) -> str:
             "name": "Check order status", "template_type": "db_get_by_id", "connection_id": conn_id,
             "description": "Look up an order by its order number and report its status.",
             "when_to_use": "The customer asks where their order is or what its status is.",
+            "intent": "track_order", "commands": ["/order", "where is my order?", "order status"],
+            "rules": [{"name": "Need the order number", "requires": ["id"], "on_missing": "ask", "reply_if_missing": "What's your order number?"}],
             "config": {"table": "orders", "id_column": "id", "output_fields": ["id", "customer_name", "quantity", "status", "ordered_at"],
                        "id_description": "The order number, for example 1001"}})
         policy = action_svc.create_action(uid, {
             "name": "Shipping policy", "template_type": "static_response",
             "description": "Explain shipping times and the return policy.",
             "when_to_use": "The customer asks about delivery, shipping costs or returns.",
+            "intent": "ask_shipping", "commands": ["/shipping", "how long does delivery take?", "return policy"], "rules": [],
             "config": {"response_text": "Standard shipping takes 3-5 business days and is free over $75. Returns are accepted within 30 days of delivery in unused condition."},
             "parameters": []})
         bot = bot_svc.create_bot(uid, {

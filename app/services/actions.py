@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..actions import flow
 from ..actions.templates import TEMPLATES, is_write_action, validate_action_config
 from ..db import dumps, execute, execute_rowcount, get_db, loads, q_all, q_one
 from ..security import decrypt_text, encrypt_text
@@ -27,6 +28,9 @@ def _hydrate(rows: list[dict]) -> list[dict]:
     params = _params_for([r["id"] for r in rows])
     for r in rows:
         r["config"] = loads(r["config"], {})
+        r["commands"] = loads(r.get("commands"), [])
+        r["rules"] = loads(r.get("rules"), [])
+        r["intent"] = r.get("intent") or flow.default_intent(r["tool_name"])
         r["parameters"] = params.get(r["id"], [])
         for flag in ("requires_confirmation", "is_write", "approved", "enabled"):
             r[flag] = bool(r[flag])
@@ -48,6 +52,7 @@ def public_view(a: dict) -> dict:
     return {
         "id": a["id"], "name": a["name"], "tool_name": a["tool_name"], "description": a["description"],
         "when_to_use": a["when_to_use"], "template_type": a["template_type"],
+        "intent": a["intent"], "commands": a["commands"], "rules": a["rules"],
         "template_label": TEMPLATES.get(a["template_type"], {}).get("label", a["template_type"]),
         "connection_id": a["connection_id"], "connection_name": conn["name"] if conn else None,
         "config": a["config"], "parameters": [
@@ -103,6 +108,16 @@ def _prepare(user_id: int, data: dict, existing: dict | None) -> dict:
 
     config, params = validate_action_config(ttype, data.get("config") or {}, data.get("parameters"), schema)
 
+    # intent, trigger commands and rules (all plain data, validated against the action's own inputs)
+    flow_errors: dict[str, str] = {}
+    final_tool = _unique_tool_name(user_id, tool_name, existing["id"] if existing else None)
+    intent = flow.clean_intent(data.get("intent"), final_tool, flow_errors)
+    commands = flow.clean_commands(data.get("commands"), flow_errors)
+    rules = flow.clean_rules(data.get("rules"), {p["name"] for p in params}, flow_errors, intent=intent, tool_name=final_tool,
+                             target=flow.target_for(ttype, bool(params), final_tool))
+    if flow_errors:
+        raise ValidationError(flow_errors)
+
     # secrets (REST auth header value): empty on update = keep existing
     secrets_enc = existing["secrets_encrypted"] if existing else ""
     if ttype == "rest_api":
@@ -124,6 +139,7 @@ def _prepare(user_id: int, data: dict, existing: dict | None) -> dict:
         "name": name, "tool_name": _unique_tool_name(user_id, tool_name, existing["id"] if existing else None),
         "description": description, "when_to_use": when, "template_type": ttype, "connection_id": connection_id,
         "config": config, "parameters": params, "secrets_encrypted": secrets_enc,
+        "intent": intent, "commands": commands, "rules": rules,
         "requires_confirmation": 1 if (write or data.get("requires_confirmation")) else 0,
         "is_write": 1 if write else 0, "enabled": 1 if data.get("enabled", True) else 0,
     }
@@ -146,9 +162,10 @@ def create_action(user_id: int, data: dict) -> dict:
     p = _prepare(user_id, data, None)
     new_id = execute(
         "INSERT INTO custom_actions (user_id, name, tool_name, description, when_to_use, template_type, connection_id, config, "
-        "secrets_encrypted, requires_confirmation, is_write, approved, enabled) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?)",
+        "secrets_encrypted, requires_confirmation, is_write, approved, enabled, intent, commands, rules) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)",
         (user_id, p["name"], p["tool_name"], p["description"], p["when_to_use"], p["template_type"], p["connection_id"],
-         dumps(p["config"]), p["secrets_encrypted"], p["requires_confirmation"], p["is_write"], p["enabled"]),
+         dumps(p["config"]), p["secrets_encrypted"], p["requires_confirmation"], p["is_write"], p["enabled"],
+         p["intent"], dumps(p["commands"]), dumps(p["rules"])),
     )
     _save_params(new_id, p["parameters"])
     return get_action(user_id, new_id)
@@ -162,11 +179,35 @@ def update_action(user_id: int, action_id: int, data: dict) -> dict | None:
     # Any edit to a sensitive action revokes its approval: it must be re-reviewed.
     execute_rowcount(
         "UPDATE custom_actions SET name=?, tool_name=?, description=?, when_to_use=?, connection_id=?, config=?, secrets_encrypted=?, "
-        "requires_confirmation=?, is_write=?, approved=0, enabled=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
+        "requires_confirmation=?, is_write=?, approved=0, enabled=?, intent=?, commands=?, rules=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
         (p["name"], p["tool_name"], p["description"], p["when_to_use"], p["connection_id"], dumps(p["config"]),
-         p["secrets_encrypted"], p["requires_confirmation"], p["is_write"], p["enabled"], action_id),
+         p["secrets_encrypted"], p["requires_confirmation"], p["is_write"], p["enabled"],
+         p["intent"], dumps(p["commands"]), dumps(p["rules"]), action_id),
     )
     _save_params(action_id, p["parameters"])
+    return get_action(user_id, action_id)
+
+
+def update_flow(user_id: int, action_id: int, data: dict) -> dict | None:
+    """Save only intent, commands and rules (used by the Flow canvas).
+
+    These fields are guidance and guard conditions, they never widen what an action may do, so unlike a full edit this
+    does not revoke the approval of a write action.
+    """
+    existing = get_action(user_id, action_id)
+    if not existing:
+        return None
+    errors: dict[str, str] = {}
+    tool = existing["tool_name"]
+    intent = flow.clean_intent(data.get("intent", existing["intent"]), tool, errors)
+    commands = flow.clean_commands(data.get("commands", existing["commands"]), errors)
+    rules = flow.clean_rules(data.get("rules", existing["rules"]), {p["name"] for p in existing["parameters"]}, errors,
+                             intent=intent, tool_name=tool,
+                             target=flow.target_for(existing["template_type"], bool(existing["parameters"]), tool))
+    if errors:
+        raise ValidationError(errors)
+    execute_rowcount("UPDATE custom_actions SET intent=?, commands=?, rules=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                     "WHERE id=? AND user_id=?", (intent, dumps(commands), dumps(rules), action_id, user_id))
     return get_action(user_id, action_id)
 
 
@@ -237,5 +278,13 @@ def tool_schema(a: dict) -> dict:
     desc = a["description"]
     if a["when_to_use"]:
         desc += f" Use when: {a['when_to_use']}"
+    guide = flow.guidance_text(a["intent"], a["commands"], a["rules"])
+    if guide:
+        desc += " " + guide
     return {"name": a["tool_name"], "description": desc[:1000],
             "parameters": {"type": "object", "properties": props, "required": required}}
+
+
+def graph_for_user(user_id: int) -> dict:
+    """Node/edge model for the Flow view (one standalone lane per action)."""
+    return flow.build_graph(list_actions(user_id))

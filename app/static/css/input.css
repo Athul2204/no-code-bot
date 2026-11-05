@@ -30,3 +30,25 @@
   .bubble-user { @apply ml-auto max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-sm bg-brand-600 px-4 py-2.5 text-sm text-white; }
   .bubble-bot { @apply mr-auto max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-bl-sm bg-slate-100 px-4 py-2.5 text-sm text-slate-900; }
 }
+
+/* ---- Actions flow view (node graph) ---- */
+.flow-canvas{position:relative;overflow:auto;border-radius:16px;padding:8px;background:radial-gradient(circle at 15% 20%,#1b1650 0,#0b0720 45%,#000 100%),linear-gradient(135deg,#2a0a6b,#8a1fd0 70%,#e0603a);background-blend-mode:screen}
+.flow-canvas::before{content:"";position:absolute;inset:0;background-image:radial-gradient(rgba(255,255,255,.18) 1px,transparent 1px);background-size:18px 18px;pointer-events:none}
+.flow-stage{position:relative}
+.flow-edges{position:absolute;inset:0;pointer-events:none;overflow:visible}
+.flow-edge{fill:none;stroke:#fff;stroke-width:2}
+.flow-edge-dashed{stroke-dasharray:5 5;stroke:#e4d4ff;opacity:.85}
+.flow-edge-label{fill:#e4d4ff;font-size:10px}
+.flow-node{position:absolute;display:flex;flex-direction:column;justify-content:center;gap:6px;padding:8px 12px;text-align:left;background:#fff;border:2px solid #4f3fd1;border-radius:10px;box-shadow:0 6px 18px rgba(0,0,0,.35);cursor:pointer;transition:transform .12s,box-shadow .12s}
+.flow-node:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(0,0,0,.45)}
+.flow-intent{border-color:#ff3d7f}.flow-rule{border-color:#a855f7}.flow-action{border-color:#4f3fd1}
+.flow-off{opacity:.55}
+.flow-head{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;color:#1a1740;min-width:0}
+.flow-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.flow-icon{font-size:16px}.flow-tag{margin-left:auto;font-size:9px;font-weight:700;text-transform:uppercase;background:#fef3c7;color:#92400e;border-radius:999px;padding:1px 6px}
+.flow-meter{display:flex;align-items:center;gap:8px;font-size:11px;color:#475569}
+.flow-bar{flex:0 0 70px;height:4px;border-radius:2px;background:#e5e7eb;overflow:hidden}.flow-bar>span{display:block;height:100%;background:linear-gradient(90deg,#a855f7,#7c3aed)}
+.flow-port{position:absolute;top:50%;width:14px;height:14px;margin-top:-7px;border-radius:50%;background:#fff;border:3px solid #4f3fd1}
+.flow-port-in{left:-8px}.flow-port-out{right:-8px}
+.flow-intent .flow-port{border-color:#ff3d7f}.flow-rule .flow-port{border-color:#a855f7}
+.flow-intent .flow-port-in{display:none}.flow-action .flow-port-out{display:none}

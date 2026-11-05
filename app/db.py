@@ -36,9 +36,18 @@ def init_db(path: str) -> None:
     conn = connect(path)
     try:
         conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        _migrate(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after the first release to databases created earlier."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(custom_actions)")}
+    for col, ddl in (("intent", "TEXT NOT NULL DEFAULT ''"), ("commands", "TEXT NOT NULL DEFAULT '[]'"), ("rules", "TEXT NOT NULL DEFAULT '[]'")):
+        if col not in have:
+            conn.execute(f"ALTER TABLE custom_actions ADD COLUMN {col} {ddl}")
 
 
 def q_all(sql: str, params: Iterable[Any] = ()) -> list[dict]:

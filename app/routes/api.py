@@ -214,6 +214,12 @@ def actions_list():
     return jsonify({"actions": [action_svc.public_view(a) for a in action_svc.list_actions(uid())]})
 
 
+@bp.get("/actions/graph")
+def actions_graph():
+    """Nodes and edges for the Flow view: intent -> rules -> action, one standalone lane per action."""
+    return jsonify(action_svc.graph_for_user(uid()))
+
+
 @bp.post("/actions")
 def actions_create():
     return jsonify(action_svc.public_view(action_svc.create_action(uid(), json_body()))), 201
@@ -228,6 +234,13 @@ def actions_get(action_id):
 @bp.put("/actions/<int:action_id>")
 def actions_update(action_id):
     a = action_svc.update_action(uid(), action_id, json_body())
+    return jsonify(action_svc.public_view(a)) if a else not_found("Action")
+
+
+@bp.put("/actions/<int:action_id>/flow")
+def actions_flow(action_id):
+    """Canvas edits: intent, commands and rules only (keeps the action's approval)."""
+    a = action_svc.update_flow(uid(), action_id, json_body())
     return jsonify(action_svc.public_view(a)) if a else not_found("Action")
 
 

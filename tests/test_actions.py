@@ -134,3 +134,24 @@ def test_secrets_never_returned(api):
     assert "super-secret-123" not in a.get_data(as_text=True)
     listing = api.get("/api/actions").get_data(as_text=True)
     assert "super-secret-123" not in listing and '"has_secret":true' in listing.replace(" ", "")
+
+
+def test_flow_endpoint_edits_intent_and_rules_and_keeps_approval(api):
+    conn = make_conn(api)
+    payload = {"name": "Add ticket", "description": "d", "template_type": "db_insert", "connection_id": conn["id"],
+               "config": {"table": "support_tickets"},
+               "parameters": [{"name": "email", "maps_to": "email", "required": True}, {"name": "subject", "maps_to": "subject", "required": True}]}
+    a = api.post("/api/actions", payload).get_json()
+    api.post(f"/api/actions/{a['id']}/approve", {"approved": True})
+    rule = {"name": "Need email", "requires": ["email"], "on_missing": "ask", "reply_if_missing": "What is your email?"}
+    r = api.put(f"/api/actions/{a['id']}/flow", {"intent": "open_ticket", "commands": ["/ticket"], "rules": [rule]})
+    assert r.status_code == 200, r.get_json()
+    out = r.get_json()
+    assert out["intent"] == "open_ticket" and out["commands"] == ["/ticket"] and out["rules"][0]["requires"] == ["email"]
+    assert out["approved"]  # canvas edits are guard conditions only: approval is kept
+    assert "open_ticket" in out["rules"][0]["yaml"]
+    # unknown input and bad intent are rejected, nothing is saved
+    bad = api.put(f"/api/actions/{a['id']}/flow", {"intent": "Bad Intent!", "rules": [{"name": "x", "requires": ["nope"]}]})
+    assert bad.status_code == 400
+    assert api.get(f"/api/actions/{a['id']}").get_json()["intent"] == "open_ticket"
+    assert api.put("/api/actions/9999/flow", {}).status_code == 404
