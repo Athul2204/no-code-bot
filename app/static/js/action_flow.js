@@ -14,16 +14,20 @@
   const W = 210, H = 70, DX = 290, LANE = 140, ROWR = 84, KEY = "bb.flow.v2";
   const ICON = { intent: "🎯", rule: "🧩", db_search: "🔎", db_get_by_id: "#️⃣", db_insert: "➕", db_update: "✏️", rest_api: "🌐", static_response: "💬", custom_form: "🛠️" };
   const SHORT = { db_search: "Search records", db_get_by_id: "Get by ID", db_insert: "Insert record", db_update: "Update record", rest_api: "REST API call", static_response: "Fixed reply", custom_form: "Custom form" };
+  const OPS = [["eq", "is equal to"], ["neq", "is not"], ["contains", "contains"], ["gt", "is greater than"], ["gte", "is at least"], ["lt", "is less than"], ["lte", "is at most"], ["empty", "is empty"], ["not_empty", "is filled in"]];
+  const ruleOut = (r) => ({ name: r.name, requires: r.requires || [], on_missing: r.on_missing || "ask", reply_if_missing: r.reply_if_missing || "", conditions: r.conditions || [], match: r.match || "all", yaml: r.yaml || "" });
+  const ruleSummary = (r) => { const q = r.requires || [], c = (r.conditions || []).length; return [q.length ? "needs " + q.join(", ") : "", c ? `${c} condition${c === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ") || "always"; };
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const uid = () => "f" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
   const svgEl = (tag, attrs) => { const el = document.createElementNS(NS, tag); Object.entries(attrs || {}).forEach(([k, v]) => el.setAttribute(k, v)); return el; };
 
   // ------------------------------------------------------------------ persistence (positions, loose rules, viewport)
   function readStore() {
-    try { const v = JSON.parse(localStorage.getItem(KEY) || "{}"); return { pos: v.pos || {}, floating: v.floating || [], view: v.view || null }; }
-    catch (e) { return { pos: {}, floating: [], view: null }; }
+    try { const v = JSON.parse(localStorage.getItem(KEY) || "{}"); return { pos: v.pos || {}, floating: v.floating || [], drafts: v.drafts || [], view: v.view || null }; }
+    catch (e) { return { pos: {}, floating: [], drafts: [], view: null }; }
   }
   const store = readStore();
+  let pendingSelect = null;   // node id to select after the page reloads its actions (set after saving a form)
   const persist = () => { try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) { /* storage unavailable: layout just isn't remembered */ } };
 
   function mount(container, ctx) {
@@ -43,11 +47,12 @@
       h("button", { type: "button", title: "Zoom in", "aria-label": "Zoom in", onclick: () => zoomBy(1.25) }, "+"),
       h("button", { type: "button", title: "Fit everything in view", onclick: () => fit(false) }, "Fit"),
       h("button", { type: "button", title: "Reset node positions", onclick: autoLayout }, "Auto-layout"));
-    const legend = h("div", { class: "fe-legend" }, h("span", {}, h("i", {}), "always runs"), h("span", {}, h("i", { class: "d" }), "skipped if input missing"));
+    const legend = h("div", { class: "fe-legend" }, h("span", {}, h("i", {}), "always runs"), h("span", {}, h("i", { class: "d" }), "conditional or skipped"));
     const canvas = h("div", { class: "fe-canvas", tabindex: "0", role: "application", "aria-label": "Action flow canvas. Select a node and press Delete to remove it." }, grid, vp, bar, legend, empty);
     const pal = h("aside", { class: "fe-pal", "aria-label": "Palette" });
     const insp = h("aside", { class: "fe-insp", "aria-label": "Inspector" });
-    clear(container).append(h("div", { class: "fe" }, h("div", { class: "fe-main" }, pal, canvas), insp));
+    const feEl = h("div", { class: "fe" }, h("div", { class: "fe-main" }, pal, canvas), insp);
+    clear(container).append(feEl);
 
     // ---------------------------------------------------------------- coordinates / viewport
     const toGraph = (cx, cy) => { const r = canvas.getBoundingClientRect(); return { x: (cx - r.left - view.x) / view.k, y: (cy - r.top - view.y) / view.k }; };
@@ -95,10 +100,12 @@
           const rid = `r${a.id}_${i}`, rp = store.pos[rid] || { x: ip.x + DX, y: ip.y + (i - (rules.length - 1) / 2) * ROWR };
           add({ id: rid, kind: "rule", a, rule: r, index: i, x: rp.x, y: rp.y });
           edges.push({ id: rid + "_in", from: iid, to: rid, style: "solid", kind: "in" });
-          edges.push({ id: rid + "_out", from: rid, to: aid, style: r.on_missing === "skip" ? "dashed" : "solid", kind: "out", label: r.on_missing === "skip" ? "skips if missing" : "asks if missing" });
+          edges.push({ id: rid + "_out", from: rid, to: aid, style: r.on_missing === "skip" || (r.conditions || []).length ? "dashed" : "solid", kind: "out",
+            label: (r.conditions || []).length ? `runs if ${r.match === "any" ? "any" : "all"} match` : r.on_missing === "skip" ? "skips if missing" : "asks if missing" });
         });
         y += Math.max(LANE, rules.length * ROWR + 60);
       });
+      store.drafts.forEach((d) => { const p = store.pos[d.id] || d; add({ id: d.id, kind: "draft", draft: d, type: d.type, x: p.x, y: p.y }); });
       store.floating.forEach((f) => { const p = store.pos[f.id] || f; add({ id: f.id, kind: "rule", floating: true, rule: f, x: p.x, y: p.y }); });
     }
 
@@ -106,17 +113,19 @@
     function nodeEl(n) {
       const a = n.a, off = n.kind === "action" && !a.enabled;
       let label, meta, fill, tag = null, icon;
-      if (n.kind === "intent") {
+      if (n.kind === "draft") {
+        label = "New " + (SHORT[n.type] || "action").toLowerCase(); icon = ICON[n.type] || "⚙️"; meta = "not saved: fill in the form →"; fill = 10;
+      } else if (n.kind === "intent") {
         const c = (a.commands || []).length; label = a.intent || "intent"; icon = ICON.intent; meta = `${c} command${c === 1 ? "" : "s"}`; fill = Math.min(100, 20 + 15 * c);
       } else if (n.kind === "rule") {
         const q = n.rule.requires || []; label = n.rule.name || "Untitled rule"; icon = ICON.rule;
-        meta = n.floating ? "not connected: drag to an action" : q.length ? "needs " + q.join(", ") : "always"; fill = q.length ? 40 + 10 * q.length : 20;
+        meta = n.floating ? "not connected: drag to an action" : ruleSummary(n.rule); fill = 20 + 10 * q.length + 12 * (n.rule.conditions || []).length;
       } else {
         const ps = a.parameters || [], req = ps.filter((p) => p.required).length; label = a.name; icon = ICON[a.template_type] || "⚙️";
         meta = ps.length ? `${req}/${ps.length} required` : "no inputs"; fill = ps.length ? Math.max(15, Math.round(100 * req / ps.length)) : 100;
         if (a.is_write && !a.approved) tag = h("span", { class: "flow-tag fe-tag-red" }, "needs approval"); else if (a.is_write) tag = h("span", { class: "flow-tag" }, "writes");
       }
-      return h("div", { class: `flow-node fe-node flow-${n.kind}${n.floating ? " fe-floating" : ""}${off ? " flow-off" : ""}${selected && selected.id === n.id ? " fe-selected" : ""}`, "data-id": n.id,
+      return h("div", { class: `flow-node fe-node flow-${n.kind === "draft" ? "action fe-draft fe-floating" : n.kind}${n.floating ? " fe-floating" : ""}${off ? " flow-off" : ""}${selected && selected.id === n.id ? " fe-selected" : ""}`, "data-id": n.id,
         style: `left:${n.x}px;top:${n.y}px;width:${W}px;height:${H}px`, title: label },
         h("span", { class: "flow-port flow-port-in" }), h("span", { class: "flow-port flow-port-out" }),
         h("span", { class: "flow-head" }, h("span", { class: "flow-icon" }, icon), h("span", { class: "flow-label" }, label), tag),
@@ -152,7 +161,7 @@
 
     // ---------------------------------------------------------------- saving helpers
     async function saveFlow(a, patch) {
-      const rules = (patch.rules || a.rules || []).map((r) => ({ name: r.name, requires: r.requires || [], on_missing: r.on_missing || "ask", reply_if_missing: r.reply_if_missing || "", yaml: r.yaml || "" }));
+      const rules = (patch.rules || a.rules || []).map(ruleOut);
       const saved = await api.put(`/api/actions/${a.id}/flow`, Object.assign({ intent: a.intent, commands: a.commands || [] }, patch, { rules }));
       Object.assign(a, saved);   // keep the shared action object current
       return saved;
@@ -172,13 +181,14 @@
     async function removeRule(n, { toFloating }) {
       const a = n.a, rules = a.rules.filter((_, i) => i !== n.index);
       await saveFlow(a, { rules });
-      if (toFloating) { const f = Object.assign({}, n.rule, { id: uid(), requires: [], x: n.x, y: n.y + 90 }); delete f.yaml; store.floating.push(f); selected = { type: "node", id: f.id }; } else selected = null;
+      if (toFloating) { const f = Object.assign({}, n.rule, { id: uid(), requires: [], conditions: [], x: n.x, y: n.y + 90 }); delete f.yaml; store.floating.push(f); selected = { type: "node", id: f.id }; } else selected = null;
       delete store.pos[n.id]; shiftRulePos(a.id, n.index); persist(); refresh();
     }
     async function attachFloating(f, a, at) {
       const names = (a.parameters || []).map((p) => p.name);
       store.floating = store.floating.filter((x) => x.id !== f.id); delete store.pos[f.id];
-      try { await addRuleTo(a, { name: f.rule.name, requires: (f.rule.requires || []).filter((r) => names.includes(r)), on_missing: f.rule.on_missing, reply_if_missing: f.rule.reply_if_missing }, at); }
+      try { await addRuleTo(a, { name: f.rule.name, requires: (f.rule.requires || []).filter((r) => names.includes(r)), on_missing: f.rule.on_missing, reply_if_missing: f.rule.reply_if_missing,
+        conditions: (f.rule.conditions || []).filter((c) => names.includes(c.field)), match: f.rule.match }, at); }
       catch (e) { store.floating.push(f.rule); persist(); throw e; }
     }
 
@@ -205,7 +215,8 @@
         else if (p.type === "attach") { await attachFloating(p.rule, p.a, { x: p.rule.x, y: p.rule.y }); toast("Rule connected.", "success"); }
         else if (p.type === "move") {
           const names = (p.a.parameters || []).map((q) => q.name), src = p.rule, kept = (src.rule.requires || []).filter((r) => names.includes(r));
-          const moved = { name: src.rule.name, requires: kept, on_missing: src.rule.on_missing, reply_if_missing: src.rule.reply_if_missing };
+          const moved = { name: src.rule.name, requires: kept, on_missing: src.rule.on_missing, reply_if_missing: src.rule.reply_if_missing,
+            conditions: (src.rule.conditions || []).filter((c) => names.includes(c.field)), match: src.rule.match };
           await addRuleTo(p.a, moved, { x: src.x, y: src.y });
           const keepSel = selected; await removeRule(src, { toFloating: false }); selected = keepSel; refresh();
           toast(kept.length < (src.rule.requires || []).length ? "Rule moved. Inputs this action doesn't have were dropped." : "Rule moved.", "success");
@@ -274,7 +285,8 @@
       try {
         if (selected.type === "edge") { const e = edges.find((x) => x.id === selected.id), n = e && e.kind === "out" && byId[e.from]; if (n) await removeRule(n, { toFloating: true }); else toast("This link is part of the action itself. Select a rule to remove it.", "info"); return; }
         const n = byId[selected.id]; if (!n) return;
-        if (n.kind === "rule" && n.floating) { store.floating = store.floating.filter((f) => f.id !== n.id); delete store.pos[n.id]; selected = null; persist(); refresh(); }
+        if (n.kind === "draft") { store.drafts = store.drafts.filter((d) => d.id !== n.id); delete store.pos[n.id]; selected = null; persist(); refresh(); }
+        else if (n.kind === "rule" && n.floating) { store.floating = store.floating.filter((f) => f.id !== n.id); delete store.pos[n.id]; selected = null; persist(); refresh(); }
         else if (n.kind === "rule") { await removeRule(n, { toFloating: false }); toast("Rule removed.", "success"); }
         else if (n.kind === "action") ctx.remove(n.a);
         else toast("An intent belongs to its action. Delete the action to remove it.", "info");
@@ -284,7 +296,10 @@
     // ---------------------------------------------------------------- palette (drag onto the canvas, or click)
     function dropItem(o, p) {
       if (o.kind === "rule") { const f = { id: uid(), name: "New rule", requires: [], on_missing: "ask", reply_if_missing: "", x: Math.round(p.x), y: Math.round(p.y) }; store.floating.push(f); persist(); selected = { type: "node", id: f.id }; refresh(); toast("Drag the rule's right-hand dot onto an action to connect it.", "info"); }
-      else ctx.newAction(o.type, { x: Math.round(p.x), y: Math.round(p.y) });
+      else {
+        const d = { id: uid().replace(/^f/, "d"), type: o.type, x: Math.round(p.x), y: Math.round(p.y) };
+        store.drafts.push(d); persist(); selected = { type: "node", id: d.id }; refresh();
+      }
     }
     function startPalDrag(e, o) {
       if (e.button !== 0) return;
@@ -321,7 +336,7 @@
     async function guarded(button, fn) { button.disabled = true; try { await fn(); } catch (e) { reportError(e); } finally { button.disabled = false; } }
 
     function renderInspector() {
-      clear(insp);
+      clear(insp); feEl.classList.remove("fe-wide");
       if (!selected) {
         insp.append(h("div", { class: "fe-h" }, "Inspector"),
           h("div", { class: "stack text-sm text-slate-600" },
@@ -342,7 +357,7 @@
         insp.append(body); return;
       }
       const n = byId[selected.id]; if (!n) return;
-      ({ intent: inspectIntent, rule: inspectRule, action: inspectAction })[n.kind](n);
+      ({ intent: inspectIntent, rule: inspectRule, action: inspectAction, draft: inspectDraft })[n.kind](n);
     }
 
     function inspectIntent(n) {
@@ -369,8 +384,27 @@
         : !names.length ? h("span", { class: "text-xs text-slate-500" }, "This action has no inputs yet. Add some in “Edit settings”.")
           : names.map((nm) => { const cb = h("input", { type: "checkbox", checked: chosen.has(nm), class: "h-4 w-4 rounded border-slate-300 text-brand-600" }); cb.addEventListener("change", () => (cb.checked ? chosen.add(nm) : chosen.delete(nm)));
             return h("label", { class: "flex items-center gap-1.5 text-sm" }, cb, h("span", { class: "font-mono" }, nm)); }));
+      // ---- conditions ("only run when ...")
+      const conds = (r.conditions || []).map((c) => Object.assign({}, c)), condBox = h("div", { class: "space-y-2" });
+      const match = select([["all", "ALL conditions are true"], ["any", "ANY condition is true"]], r.match || "all");
+      const allNames = a ? (a.parameters || []).map((p) => p.name).filter(Boolean) : [];
+      function drawConds() {
+        clear(condBox);
+        if (!a) { condBox.append(h("span", { class: "text-xs text-slate-500" }, "Connect this rule to an action to add conditions on its inputs.")); return; }
+        if (!conds.length) condBox.append(h("span", { class: "text-xs text-slate-500" }, "No conditions: the rule only checks the inputs above."));
+        conds.forEach((c, i) => {
+          const f = select(allNames.map((x) => [x, x]), c.field || allNames[0], { "aria-label": "Input" }), o = select(OPS, c.op || "eq", { "aria-label": "Comparison" });
+          const v = h("input", { class: "input", type: "text", maxlength: 200, value: c.value || "", placeholder: "value", "aria-label": "Value" });
+          const sync = () => { c.field = f.value; c.op = o.value; c.value = v.value; v.style.display = ["empty", "not_empty"].includes(o.value) ? "none" : ""; };
+          [f, o, v].forEach((el) => el.addEventListener("input", sync)); sync();
+          condBox.append(h("div", { class: "rounded-lg border border-slate-200 bg-slate-50/70 p-2 space-y-1.5" }, f, o, v,
+            h("button", { type: "button", class: "text-xs font-medium text-red-600 hover:underline", onclick: () => { conds.splice(i, 1); drawConds(); } }, "Remove condition")));
+        });
+        if (conds.length < 6 && allNames.length) condBox.append(h("button", { type: "button", class: "btn-secondary btn-sm", onclick: () => { conds.push({ field: allNames[0], op: "eq", value: "" }); drawConds(); } }, "+ Add condition"));
+      }
+      drawConds();
       const save = btn("Apply", "btn-primary btn-sm", () => guarded(save, async () => {
-        const upd = { name: name.value.trim(), requires: [...chosen].filter((x) => names.includes(x)), on_missing: miss.value, reply_if_missing: reply.value.trim() };
+        const upd = { name: name.value.trim(), requires: [...chosen].filter((x) => names.includes(x)), on_missing: miss.value, reply_if_missing: reply.value.trim(), conditions: conds, match: match.value };
         if (n.floating) { Object.assign(r, upd); persist(); toast("Rule updated.", "success"); refresh(); return; }
         await saveFlow(a, { rules: a.rules.map((x, i) => (i === n.index ? Object.assign({}, upd, { yaml: "" }) : x)) });
         toast("Rule saved.", "success"); refresh();
@@ -378,10 +412,25 @@
       const del = btn("Delete rule", "btn-ghost btn-sm text-red-600 hover:bg-red-50", () => guarded(del, deleteSelected));
       insp.append(h("div", { class: "stack" }, kindBadge("rule", "🧩 Rule" + (n.floating ? " · not connected" : "")),
         h("p", { class: "text-xs text-slate-500" }, n.floating ? "Drag this rule's right-hand dot onto an action to connect it." : `Runs before “${a.name}”.`),
-        field("Rule name", name, null, null), field("Run only when the user has given", boxes, null, null), field("If something is missing", miss, null, null), field("Question to ask", reply, "Becomes an utter_ response in the Rasa export.", null),
+        field("Rule name", name, null, null), field("Needs these inputs", boxes, null, null), field("If an input is missing", miss, null, null),
+        field("Only run when", h("div", { class: "space-y-2" }, match, condBox), "Checked on every run, for every action type. Conditions run in this app; the Rasa export covers inputs only.", null),
+        field("Message when this rule stops the action", reply, "Also the question asked for a missing input. Leave empty for a default message.", null),
         h("div", { class: "flex gap-2" }, save, del)));
     }
 
+    /** Embeds the full action form in the inspector (wider panel). Used for new drafts and for "Edit settings". */
+    function embedForm(type, existing, { onSaved, onCancel }) {
+      clear(insp); feEl.classList.add("fe-wide");
+      const host = h("div", {}); insp.append(host);
+      ctx.buildForm(host, type, { existing, onSaved, onCancel });
+    }
+    function inspectDraft(n) {
+      const done = () => { store.drafts = store.drafts.filter((d) => d.id !== n.id); delete store.pos[n.id]; persist(); };
+      embedForm(n.type, null, {
+        onCancel: () => { done(); selected = null; refresh(); },
+        onSaved: (saved) => { App.flowEditor.placeLane(saved.id, n.x, n.y); done(); pendingSelect = "a" + saved.id; ctx.reload(); },
+      });
+    }
     function inspectAction(n) {
       const a = n.a;
       const en = h("input", { type: "checkbox", checked: a.enabled, class: "h-4 w-4 rounded border-slate-300 text-brand-600" });
@@ -393,12 +442,14 @@
         a.when_to_use ? h("p", { class: "text-xs text-slate-500" }, h("span", { class: "font-medium" }, "Used when: "), a.when_to_use) : null,
         h("p", { class: "text-xs text-slate-500" }, `${(a.rules || []).length} rule${(a.rules || []).length === 1 ? "" : "s"} · intent `, h("span", { class: "font-mono" }, a.intent)),
         h("label", { class: "flex items-center gap-2 text-sm" }, en, "Enabled"),
-        h("div", { class: "flex flex-wrap gap-2" }, btn("Test", "btn-primary btn-sm", () => ctx.test(a)), btn("Edit settings", "btn-secondary btn-sm", () => ctx.edit(a)),
+        h("div", { class: "flex flex-wrap gap-2" }, btn("Test", "btn-primary btn-sm", () => ctx.test(a)), btn("Edit settings", "btn-secondary btn-sm", () => embedForm(a.template_type, a, { onCancel: () => renderInspector(), onSaved: () => { pendingSelect = "a" + a.id; ctx.reload(); } })),
           a.is_write ? btn(a.approved ? "Revoke approval" : "Review & approve", a.approved ? "btn-ghost btn-sm" : "btn-secondary btn-sm", () => ctx.approve(a)) : null,
           btn("Delete", "btn-ghost btn-sm text-red-600 hover:bg-red-50", () => ctx.remove(a)))));
     }
 
     renderPalette(); refresh();
+    if (pendingSelect && byId[pendingSelect]) pick({ type: "node", id: pendingSelect });
+    pendingSelect = null;
     if (!store.view) requestAnimationFrame(() => fit(true));
   }
 

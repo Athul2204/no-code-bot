@@ -155,3 +155,73 @@ def test_flow_endpoint_edits_intent_and_rules_and_keeps_approval(api):
     assert bad.status_code == 400
     assert api.get(f"/api/actions/{a['id']}").get_json()["intent"] == "open_ticket"
     assert api.put("/api/actions/9999/flow", {}).status_code == 404
+
+
+# ----------------------------------------------------------------------------- rule engine (all action types)
+
+def _cond(field, op, value=""):
+    return {"field": field, "op": op, "value": value}
+
+
+def test_condition_operators_unit():
+    from app.actions.flow import condition_holds
+    assert condition_holds(_cond("p", "lte", "100"), {"p": 99.5}) and not condition_holds(_cond("p", "lte", "100"), {"p": 101})
+    assert condition_holds(_cond("c", "eq", "Gold"), {"c": " gold "})           # text is case-insensitive
+    assert condition_holds(_cond("n", "eq", "3"), {"n": 3.0})                   # numbers compare numerically
+    assert condition_holds(_cond("t", "contains", "tent"), {"t": "Big Tent"}) and condition_holds(_cond("t", "neq", "x"), {"t": "y"})
+    assert condition_holds(_cond("x", "empty"), {}) and condition_holds(_cond("x", "not_empty"), {"x": "a"})
+    assert not condition_holds(_cond("x", "gt", "1"), {}) and not condition_holds(_cond("x", "eq", "a"), {})  # nothing to compare
+    assert not condition_holds(_cond("x", "gt", "1"), {"x": "abc"})              # non-numbers never satisfy numeric tests
+
+
+def test_rules_gate_every_action_type(api):
+    conn = make_conn(api)
+    rule = {"name": "Budget only", "requires": [], "on_missing": "ask", "reply_if_missing": "Sorry, that is over budget.",
+            "conditions": [_cond("max_price", "lte", "100")], "match": "all"}
+    # database search
+    s = api.post("/api/actions", search_payload(conn["id"], rules=[rule])).get_json()
+    assert s["rules"][0]["conditions"] == rule["conditions"]
+    blocked = api.post(f"/api/actions/{s['id']}/test", {"arguments": {"max_price": 500}}).get_json()
+    assert not blocked["ok"] and blocked["status"] == "skipped" and "over budget" in blocked["summary"]
+    assert api.post(f"/api/actions/{s['id']}/test", {"arguments": {"max_price": 50}}).get_json()["ok"]
+    # fixed reply and custom form use the very same gate
+    for ttype, cfg in (("static_response", {"response_text": "Hi {max_price}"}), ("custom_form", {"result_template": "Hi {max_price}"})):
+        a = api.post("/api/actions", {"name": "T " + ttype, "description": "d", "template_type": ttype, "config": cfg,
+                                      "parameters": [{"name": "max_price", "param_type": "number"}], "rules": [rule]})
+        assert a.status_code == 201, a.get_json()
+        aid = a.get_json()["id"]
+        assert api.post(f"/api/actions/{aid}/test", {"arguments": {"max_price": 500}}).get_json()["status"] == "skipped"
+        assert api.post(f"/api/actions/{aid}/test", {"arguments": {"max_price": 5}}).get_json()["ok"]
+    logs = api.get("/api/logs").get_json()["logs"]
+    assert any(entry["status"] == "skipped" for entry in logs)
+
+
+def test_skip_rule_and_any_match(api):
+    conn = make_conn(api)
+    skip = {"name": "Needs a name", "requires": ["name"], "on_missing": "skip", "reply_if_missing": "", "conditions": [], "match": "all"}
+    s = api.post("/api/actions", search_payload(conn["id"], rules=[skip])).get_json()
+    r = api.post(f"/api/actions/{s['id']}/test", {"arguments": {"max_price": 10}}).get_json()
+    assert r["status"] == "skipped" and "name" in r["summary"]                  # skip rules are now enforced
+    assert api.post(f"/api/actions/{s['id']}/test", {"arguments": {"name": "tent"}}).get_json()["ok"]
+    anyr = {"name": "Either", "requires": [], "on_missing": "ask", "reply_if_missing": "",
+            "conditions": [_cond("max_price", "lt", "10"), _cond("name", "contains", "tent")], "match": "any"}
+    s2 = api.post("/api/actions", search_payload(conn["id"], name="Find two", rules=[anyr])).get_json()
+    assert api.post(f"/api/actions/{s2['id']}/test", {"arguments": {"name": "big tent", "max_price": 99}}).get_json()["ok"]
+    assert api.post(f"/api/actions/{s2['id']}/test", {"arguments": {"name": "lamp", "max_price": 99}}).get_json()["status"] == "skipped"
+
+
+def test_condition_validation(api):
+    conn = make_conn(api)
+    for bad in ([_cond("nope", "eq", "x")], [_cond("name", "weird", "x")], [_cond("name", "eq", "")], [_cond("name", "eq", "x")] * 7):
+        r = api.post("/api/actions", search_payload(conn["id"], rules=[{"name": "R", "requires": [], "conditions": bad}]))
+        assert r.status_code == 400, bad
+    r = api.post("/api/actions", search_payload(conn["id"], rules=[{"name": "R", "requires": [], "match": "sometimes"}]))
+    assert r.status_code == 400
+
+
+def test_chat_trigger_command_and_rule_before_confirmation(api, app):
+    from app.actions.flow import match_command, rule_blocked, rule_missing
+    assert match_command("/products tents", ["/products"]) and not match_command("hello", ["/products"])
+    rules = [{"name": "R", "requires": ["email"], "on_missing": "ask", "conditions": [_cond("subject", "contains", "refund")], "match": "all"}]
+    assert rule_missing(rules, {"subject": "refund"}) == ["email"]               # ask-rule inputs are checked before a confirmation card
+    assert rule_blocked(rules, {"subject": "hello", "email": "a@b.c"})["rule"] == "R"

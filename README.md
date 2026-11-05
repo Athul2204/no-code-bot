@@ -53,9 +53,10 @@ The app works without an API key: you can build chatbots, connect databases and 
 
 1. **Connect Database**: pick the sample store (or upload a `.db`/`.sqlite` file). Test it, browse tables and columns with dropdowns, preview rows. Connections are **read-only** until you allow writes.
 2. **Custom Actions** is a node canvas (like React Flow). Each action is a lane: **Intent → Rules → Action**.
-   * Drag an action type (Search / Get by ID / Insert / Update / REST / Fixed reply / Custom form) from the **Add** bar onto the canvas. A short form asks for its settings, then it appears where you dropped it.
+   * Drag an action type (Search / Get by ID / Insert / Update / REST / Fixed reply / Custom form) from the **Add** bar onto the canvas. It works like **Rule**: a dashed draft node appears at once and its setup form opens in the inspector on the right. *Create action* turns it into a real lane where you dropped it; *Cancel* removes it. **Edit settings** on any action opens the same form in the inspector.
    * Drag from an intent's right-hand dot into empty space to **add a rule**; drag a rule's dot onto an action to **attach or move** it. Click a node or link to edit it in the inspector, press **Delete** to remove it.
    * Drag nodes, drag the background to pan, scroll to zoom. Positions are remembered in your browser. The old **List** tab is still available.
+   **Rules are enforced for every action type** (database, REST, fixed reply, custom form, Python) before anything runs: a rule can require inputs (ask the user, or skip), and can add conditions such as `max_price is at most 100` (match ALL or ANY). A rule that stops an action replies with its own message and is logged as `skipped`. A message that matches an intent's command (e.g. `/products`) tells the AI which action to use. Conditions run in this app; the Rasa export covers inputs only.
    Actions that change data start **unapproved**; use *Review & approve* (inspector or List tab) to allow them. Editing intents/rules on the canvas keeps an existing approval; changing an action's settings revokes it.
 3. **Create Chatbot**: describe its purpose in plain English, set a welcome message and instructions, tick the actions it may use.
 4. **Chat Playground**: chat, watch action cards, confirm sensitive actions. **Test mode** (on by default) only *simulates* writes.

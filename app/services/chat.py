@@ -13,6 +13,7 @@ from typing import Any
 
 from flask import current_app
 
+from ..actions import flow
 from ..actions.executor import ActionResult, execute_action, log_execution
 from ..db import dumps, execute, execute_rowcount, loads, q_all, q_one
 from ..llm import SETUP_MESSAGE, LLMError, get_provider
@@ -125,15 +126,19 @@ def send_message(user: dict, bot: dict, conv: dict, text: str) -> dict:
         add_message(conv["id"], "notice", SETUP_MESSAGE, meta={"kind": "setup"})
         return {"events": [{"type": "setup", "content": SETUP_MESSAGE}], "setup_required": True}
     events: list[dict] = []
-    _run_loop(user, bot, conv, provider, events)
+    _run_loop(user, bot, conv, provider, events, trigger_text=text)
     return {"events": events, "setup_required": False}
 
 
-def _run_loop(user: dict, bot: dict, conv: dict, provider, events: list[dict]) -> None:
+def _run_loop(user: dict, bot: dict, conv: dict, provider, events: list[dict], trigger_text: str | None = None) -> None:
     cfg = current_app.config
     allowed = action_svc.allowed_actions_for_bot(user["id"], bot["id"])
     tools = [action_svc.tool_schema(a) for a in allowed.values()]
     system = build_system_prompt(bot)
+    hits = [a for a in allowed.values() if flow.match_command(trigger_text or "", a.get("commands"))]
+    if hits:  # the message is one of an action's trigger commands: tell the model which intent the user chose
+        system += ("\n\nThe user's message is a command for: " + "; ".join(f"{a['tool_name']} (intent {a['intent']})" for a in hits)
+                   + ". Call that action now, using the rest of the message for its inputs, and respect its rules.")
     test_mode = bool(conv["test_mode"])
     max_rounds = cfg["MAX_TOOL_ROUNDS"]
 
@@ -173,7 +178,8 @@ def _run_loop(user: dict, bot: dict, conv: dict, provider, events: list[dict]) -
                 from ..validation import coerce_args
 
                 clean, missing, errors = coerce_args(action["parameters"], c["arguments"])
-                if missing or errors:  # let the LLM ask the user; nothing to confirm yet
+                rule_stop = flow.rule_missing(action.get("rules"), clean) or flow.rule_blocked(action.get("rules"), clean)
+                if missing or errors or rule_stop:  # let the LLM ask the user / report the rule; nothing to confirm yet
                     result = execute_action(action, c["arguments"], user_id=user["id"], test_mode=test_mode, chatbot_id=bot["id"], conversation_id=conv["id"])
                     _save_tool(conv["id"], c["id"], action, c["name"], c["arguments"], result, events)
                 elif pending_created:

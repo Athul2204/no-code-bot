@@ -67,3 +67,10 @@
 .fe-insp .stack > * + * { margin-top: 12px; }
 .fe-checks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .fe-sub{min-width:0}
+
+/* ---- action form embedded in the inspector, and unsaved (draft) action nodes ---- */
+.fe.fe-wide { grid-template-columns: minmax(0, 1fr) 460px; }
+.fe-insp .card { background: transparent; border: 0; box-shadow: none; padding: 0 0 14px !important; border-bottom: 1px solid #e2e8f0; border-radius: 0; }
+.fe-insp form > .card:last-of-type { border-bottom: 0; }
+.fe-draft .flow-port { display: none; }
+.fe-draft { border-style: dashed; background: #faf5ff; }

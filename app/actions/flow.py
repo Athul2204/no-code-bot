@@ -139,8 +139,99 @@ def parse_rule_yaml(text: str, intent: str, target: str, key: str, errors: dict)
     return items
 
 
+OPERATORS = {"eq": "is equal to", "neq": "is not", "contains": "contains", "gt": "is greater than", "gte": "is at least",
+             "lt": "is less than", "lte": "is at most", "empty": "is empty", "not_empty": "is filled in"}
+NO_VALUE_OPS = ("empty", "not_empty")
+MAX_CONDITIONS, MAX_COND_VALUE = 6, 200
+MATCH_MODES = ("all", "any")
+
+
+def clean_conditions(value: Any, param_names: set[str], errors: dict, key: str) -> list[dict]:
+    """Rule conditions = [{field, op, value}], each testing one of the action's own inputs."""
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list) or len(value) > MAX_CONDITIONS:
+        errors[key] = f"Add at most {MAX_CONDITIONS} conditions."
+        return []
+    out: list[dict] = []
+    for i, c in enumerate(value):
+        if not isinstance(c, dict):
+            errors[key] = "Invalid condition."
+            continue
+        fld, op = _text(c.get("field"), 60), _text(c.get("op"), 12)
+        val = _text(c.get("value"), MAX_COND_VALUE + 1)
+        if fld not in param_names:
+            errors[f"{key}.{i}.field"] = "Choose one of this action's inputs."
+        if op not in OPERATORS:
+            errors[f"{key}.{i}.op"] = "Choose how to compare."
+        elif op not in NO_VALUE_OPS and val == "":
+            errors[f"{key}.{i}.value"] = "Enter the value to compare with."
+        if len(val) > MAX_COND_VALUE:
+            errors[f"{key}.{i}.value"] = f"At most {MAX_COND_VALUE} characters."
+        out.append({"field": fld, "op": op, "value": "" if op in NO_VALUE_OPS else val[:MAX_COND_VALUE]})
+    return out
+
+
+def _num(x: Any) -> float | None:
+    if isinstance(x, bool):
+        return None
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def condition_holds(cond: dict, args: dict) -> bool:
+    """True when the user's value for cond['field'] satisfies the comparison. Numbers compare numerically, text case-insensitively."""
+    actual, op, expected = args.get(cond["field"]), cond["op"], cond.get("value", "")
+    blank = actual is None or (isinstance(actual, str) and not actual.strip())
+    if op == "empty":
+        return blank
+    if op == "not_empty":
+        return not blank
+    if blank:
+        return False  # nothing to compare: only the (not_)empty tests can be true
+    if op in ("gt", "gte", "lt", "lte"):
+        a, b = _num(actual), _num(expected)
+        if a is None or b is None:
+            return False
+        return {"gt": a > b, "gte": a >= b, "lt": a < b, "lte": a <= b}[op]
+    a_num, b_num = _num(actual), _num(expected)
+    if op in ("eq", "neq") and a_num is not None and b_num is not None:
+        same = a_num == b_num
+    else:
+        a_txt, b_txt = str(actual).strip().lower(), str(expected).strip().lower()
+        same = (b_txt in a_txt) if op == "contains" else a_txt == b_txt
+    return same if op in ("eq", "contains") else not same
+
+
+def describe_condition(c: dict) -> str:
+    v = "" if c["op"] in NO_VALUE_OPS else f" {c.get('value', '')}"
+    return f"{c['field']} {OPERATORS.get(c['op'], c['op'])}{v}"
+
+
+def rule_blocked(rules: list[dict], args: dict) -> dict | None:
+    """Rules stop an action with a message (the executor never runs it) when:
+    * a 'skip' rule's required inputs are missing, or
+    * a rule's conditions are not met (all of them, or any of them, depending on the rule's match mode).
+    'ask' rules are handled earlier by rule_missing (the bot asks the user instead). Returns {rule, message} or None."""
+    for r in rules or []:
+        name, custom = r.get("name", "rule"), (r.get("reply_if_missing") or "").strip()
+        if r.get("on_missing", "ask") == "skip":
+            absent = [n for n in r.get("requires", []) if args.get(n) in (None, "")]
+            if absent:
+                return {"rule": name, "message": custom or f"Skipped by rule “{name}”: missing {', '.join(absent)}."}
+        conds = r.get("conditions") or []
+        if conds:
+            hits = [condition_holds(c, args) for c in conds]
+            if not (any(hits) if r.get("match") == "any" else all(hits)):
+                return {"rule": name, "message": custom or f"Rule “{name}” was not satisfied ({('any' if r.get('match') == 'any' else 'all')} of: "
+                                                           + "; ".join(describe_condition(c) for c in conds) + ")."}
+    return None
+
+
 def clean_rules(value: Any, param_names: set[str], errors: dict, *, intent: str, target: str, tool_name: str) -> list[dict]:
-    """Rule = {name, requires, on_missing, reply_if_missing, yaml}. `yaml` is the real Rasa rule and is what gets exported."""
+    """Rule = {name, requires, on_missing, reply_if_missing, conditions, match, yaml}. `yaml` is the real Rasa rule and is what gets exported."""
     if value in (None, ""):
         return []
     if not isinstance(value, list) or len(value) > MAX_RULES:
@@ -169,8 +260,13 @@ def clean_rules(value: Any, param_names: set[str], errors: dict, *, intent: str,
             name = name or (items[0]["rule"][:MAX_RULE_NAME] if items else "")
         if not name:
             errors[f"rules.{i}.name"] = "Give the rule a name."
+        conditions = clean_conditions(r.get("conditions"), param_names, errors, f"rules.{i}.conditions")
+        match = r.get("match") or "all"
+        if match not in MATCH_MODES:
+            errors[f"rules.{i}.match"] = "Choose all or any."
+            match = "all"
         rule = {"name": name, "requires": [x for x in dict.fromkeys(requires) if x in param_names], "on_missing": on_missing,
-                "reply_if_missing": _text(r.get("reply_if_missing"), MAX_REPLY)}
+                "reply_if_missing": _text(r.get("reply_if_missing"), MAX_REPLY), "conditions": conditions, "match": match}
         if not raw_yaml and name:
             raw_yaml = dump_rules_yaml(rule_to_rasa(rule, intent, target, tool_name, i)).strip()
         rule["yaml"] = raw_yaml
@@ -204,6 +300,8 @@ def guidance_text(intent: str, commands: list[str], rules: list[dict]) -> str:
         if r.get("requires"):
             verb = "Only run once you have" if r.get("on_missing", "ask") == "ask" else "Skip unless you have"
             parts.append(f"Rule '{r['name']}': {verb} {', '.join(r['requires'])}.")
+        if r.get("conditions"):
+            parts.append(f"Rule '{r['name']}': only runs when {'any' if r.get('match') == 'any' else 'all'} of: " + "; ".join(describe_condition(c) for c in r["conditions"]) + ".")
     return " ".join(parts)
 
 
@@ -224,6 +322,15 @@ def match_command(text: str, commands: list[str]) -> bool:
 COL_X = (40, 330, 620)  # intent | rule | action
 ROW_H = 150
 KINDS = {"intent": "Intent", "rule": "Rule", "action": "Action"}
+
+
+def rule_summary(r: dict) -> str:
+    parts = []
+    if r.get("requires"):
+        parts.append("needs " + ", ".join(r["requires"]))
+    if r.get("conditions"):
+        parts.append(f"{len(r['conditions'])} condition{'s' if len(r['conditions']) != 1 else ''}")
+    return " · ".join(parts) or "always"
 
 
 def build_graph(actions: list[dict]) -> dict:
@@ -254,9 +361,9 @@ def build_graph(actions: list[dict]) -> dict:
         for i, r in enumerate(rules):
             rid = f"{base}_rule{i}"
             nodes.append({"id": rid, "kind": "rule", "action_id": a["id"], "label": r["name"], "icon": "rule",
-                          "meta": ("needs " + ", ".join(r["requires"])) if r["requires"] else "always",
+                          "meta": rule_summary(r),
                           "fill": 40 + 10 * len(r["requires"]) if r["requires"] else 20, "x": COL_X[1], "y": y + i * 70 - (len(rules) - 1) * 35})
-            dashed = "dashed" if r["on_missing"] == "skip" else "solid"
+            dashed = "dashed" if (r["on_missing"] == "skip" or r.get("conditions")) else "solid"
             edges.append({"id": f"{rid}_in", "from": f"{base}_intent", "to": rid, "style": "solid", "label": ""})
             edges.append({"id": f"{rid}_out", "from": rid, "to": f"{base}_action", "style": dashed, "label": r["on_missing"]})
     return {"nodes": nodes, "edges": edges, "height": 60 + max(1, len(actions)) * ROW_H, "stage": "individual"}

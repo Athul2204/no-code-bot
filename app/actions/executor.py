@@ -32,7 +32,7 @@ class ActionResult:
     error: str = ""
     simulated: bool = False
     missing: list[str] = field(default_factory=list)
-    status: str = "ok"  # ok | error | simulated | rejected | invalid
+    status: str = "ok"  # ok | error | simulated | rejected | invalid | skipped (a rule stopped it)
 
     def for_llm(self) -> str:
         payload: dict[str, Any] = {"ok": self.ok}
@@ -221,6 +221,9 @@ def execute_action(action: dict, raw_args: Any, *, user_id: int, test_mode: bool
                 labels = [next(p["label"] for p in action["parameters"] if p["name"] == m) for m in missing]
                 result = ActionResult(False, "Missing information: " + ", ".join(labels), error="Missing required fields",
                                       missing=missing, status="invalid")
+            elif (blocked := flow.rule_blocked(action.get("rules"), args)):
+                # Rules gate every action type (database, REST, fixed reply, custom form, Python) before anything runs.
+                result = _err(blocked["message"], status="skipped", data={"rule": blocked["rule"]})
             else:
                 try:
                     result = RUNNERS[action["template_type"]](action, dict(args), test_mode)

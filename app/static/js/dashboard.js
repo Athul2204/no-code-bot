@@ -7,7 +7,7 @@
       h("p", { class: "text-sm text-slate-500" }, label), h("p", { class: "mt-1 text-3xl font-semibold" }, String(value)));
   }
   function statusBadge(s) {
-    const map = { ok: "badge-green", error: "badge-red", rejected: "badge-red", declined: "badge-amber", invalid: "badge-amber", needs_input: "badge-amber" };
+    const map = { ok: "badge-green", error: "badge-red", rejected: "badge-red", declined: "badge-amber", invalid: "badge-amber", needs_input: "badge-amber", skipped: "badge-amber" };
     return h("span", { class: map[s] || "badge-gray" }, s.replace("_", " "));
   }
 

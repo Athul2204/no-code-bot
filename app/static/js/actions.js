@@ -32,7 +32,7 @@
       const box = h("div", {});
       root.append(box);
       App.flowEditor.mount(box, { actions: S.actions, templates: S.templates, connections: S.connections, icons: ICONS, describe,
-        newAction: (type, pos) => showBuilder(type, null, pos), edit: (a) => showBuilder(a.template_type, a),
+        buildForm: (host, type, o) => showBuilder(type, o.existing || null, null, Object.assign({ host }, o)), reload: () => load(),
         test: (a) => App.testAction(a), approve, remove });
       root.append(h("h2", { class: "mb-3 mt-10 text-base font-semibold" }, "Execution log"), logPanel());
       return;
@@ -333,7 +333,7 @@
       r = r || {};
       const row = { name: h("input", { class: "input", type: "text", maxlength: 80, value: r.name || "", placeholder: "e.g. Need a price before searching" }),
         miss: select(MISS, r.on_missing || "ask"), reply: h("input", { class: "input", type: "text", maxlength: 300, value: r.reply_if_missing || "", placeholder: "Optional message when something is missing" }),
-        boxes: h("div", { class: "flex flex-wrap gap-3" }), chosen: new Set(r.requires || []),
+        boxes: h("div", { class: "flex flex-wrap gap-3" }), chosen: new Set(r.requires || []), conditions: r.conditions || [], match: r.match || "all",
         yaml: h("textarea", { class: "input font-mono text-xs", rows: 7, spellcheck: false, placeholder: "Saved as Rasa YAML. Leave empty to generate it from the fields above." }, r.yaml || "") };
       const resetYaml = () => { row.yaml.value = ""; };  // fields changed: regenerate the YAML on save
       [row.name, row.miss, row.reply].forEach((el) => el.addEventListener("input", resetYaml));
@@ -352,7 +352,7 @@
         h("div", { class: "grid gap-3 sm:grid-cols-2" }, h("div", { class: "sm:col-span-2" }, h("label", { class: "label" }, "Rule name"), row.name),
           h("div", { class: "sm:col-span-2" }, h("label", { class: "label" }, "Run only when the user has given"), row.boxes),
           h("div", {}, h("label", { class: "label" }, "If something is missing"), row.miss), h("div", {}, h("label", { class: "label" }, "Question to ask (becomes an utter_ response)"), row.reply),
-          h("div", { class: "sm:col-span-2" }, h("label", { class: "label" }, "Rasa rule (rules.yml)"), row.yaml, h("p", { class: "hint" }, "This exact YAML is exported to data/rules.yml. You may edit it; only this action's intent and utter_/action_ steps are allowed."))));
+          h("div", { class: "sm:col-span-2" }, h("label", { class: "label" }, "Rasa rule (rules.yml)"), row.yaml, row.conditions.length ? h("p", { class: "hint" }, `${row.conditions.length} condition(s) on this rule are kept. Edit them on the Flow canvas.`) : null, h("p", { class: "hint" }, "This exact YAML is exported to data/rules.yml. You may edit it; only this action's intent and utter_/action_ steps are allowed."))));
       rules.push(row); list.append(row.el);
     }
     ((full && full.rules) || []).forEach(addRule);
@@ -369,15 +369,18 @@
       h("div", {}, h("label", { class: "label" }, "Rules"), list, h("div", { class: "mt-2 flex gap-2" }, h("button", { class: "btn-secondary btn-sm", type: "button", onclick: () => addRule({}) }, "+ Add rule"),
         h("button", { class: "btn-ghost btn-sm", type: "button", onclick: suggest }, "Suggest from this action"))));
     return { node, collect: () => ({ intent: intent.value.trim(), commands: cmds.value.split("\n").map((x) => x.trim()).filter(Boolean),
-      rules: rules.map((r) => ({ name: r.name.value.trim(), requires: [...r.chosen].filter((n) => getNames().includes(n)), on_missing: r.miss.value, reply_if_missing: r.reply.value.trim(), yaml: r.yaml.value.trim() })) }) };
+      rules: rules.map((r) => ({ name: r.name.value.trim(), requires: [...r.chosen].filter((n) => getNames().includes(n)), on_missing: r.miss.value, reply_if_missing: r.reply.value.trim(), conditions: (r.conditions || []).filter((c) => getNames().includes(c.field)), match: r.match, yaml: r.yaml.value.trim() })) }) };
   }
 
-  async function showBuilder(type, existing, dropPos) {
-    clear(pageActions);
+  /** Action form. Page mode (default) fills the page; with opts.host it renders inside that element (the canvas inspector)
+   *  and reports back through opts.onSaved(saved) / opts.onCancel(). */
+  async function showBuilder(type, existing, dropPos, opts) {
+    const target = (opts && opts.host) || root, cancel = opts ? opts.onCancel : showList;
+    if (!opts) clear(pageActions);
     const tpl = S.templates.find((t) => t.type === type);
-    clear(root).append(loadingBlock());
+    clear(target).append(loadingBlock());
     let full = existing;
-    if (existing) { try { full = await api.get("/api/actions/" + existing.id); } catch (e) { clear(root).append(errorBlock(e.message, showList)); return; } }
+    if (existing) { try { full = await api.get("/api/actions/" + existing.id); } catch (e) { clear(target).append(errorBlock(e.message, cancel)); return; } }
     const isWrite = (type === "db_insert" || type === "db_update");
 
     const name = h("input", { class: "input", type: "text", maxlength: 80, value: full ? full.name : "", placeholder: "e.g. Find products", "data-field": "name" });
@@ -421,10 +424,11 @@
         h("label", { class: "flex items-center gap-2 text-sm" }, enabledCb, "Enabled"),
         h("p", { class: "rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600" }, "Actions that change data start unapproved. After saving, use “Review & approve” on the actions list. Editing such an action later removes the approval so you can re-check it."),
         h("details", {}, h("summary", { class: "cursor-pointer text-sm font-medium" }, "Advanced"), h("div", { class: "mt-3 max-w-sm" }, field("Technical name", toolName, "The name the AI uses internally. Lowercase letters, numbers and underscores.", null)))),
-      h("div", { class: "flex justify-end gap-2" }, h("button", { class: "btn-secondary", type: "button", onclick: showList }, "Cancel"), saveBtn));
+      h("div", { class: "flex justify-end gap-2" }, h("button", { class: "btn-secondary", type: "button", onclick: cancel }, "Cancel"), saveBtn));
     if (isWrite) { confirmCb.checked = true; confirmCb.disabled = true; }
 
-    clear(root).append(h("button", { class: "btn-ghost -ml-2 mb-4", type: "button", onclick: showList }, "← Back to actions"),
+    if (opts) clear(target).append(h("h3", { class: "mb-3 text-sm font-semibold" }, existing ? "Edit action" : "New action"), form);
+    else clear(root).append(h("button", { class: "btn-ghost -ml-2 mb-4", type: "button", onclick: showList }, "← Back to actions"),
       h("h2", { class: "mb-4 text-lg font-semibold" }, existing ? "Edit action" : "New action"), form);
     await drawSection(true);
 
@@ -442,6 +446,7 @@
           const saved = existing ? await api.put("/api/actions/" + existing.id, payload) : await api.post("/api/actions", payload);
           if (!existing && dropPos && saved && saved.id) App.flowEditor.placeLane(saved.id, dropPos.x, dropPos.y);
           toast(saved.is_write ? "Saved. Approve it before chatbots can use it." : "Action saved.", "success");
+          if (opts) { opts.onSaved(saved); return; }
           await load();
         } catch (e) { reportError(e, form); }
       });
